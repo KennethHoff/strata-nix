@@ -1,5 +1,6 @@
 # services.strata: Strata's OpenAI/Anthropic-compatible server as a systemd
-# service.
+# service. Importing it also adds pkgs.strata and pkgs.strata-iq-pack, enabled
+# or not, so a host can build model packs with pkgs.strata-iq-pack.mkPack.
 #
 # ## Why it is not started at boot by default
 #
@@ -52,12 +53,7 @@ in
 {
   options.services.strata = {
     enable = lib.mkEnableOption "the Strata inference server";
-    package = lib.mkOption {
-      type = lib.types.package;
-      default = pkgs.callPackage ./package.nix { };
-      defaultText = lib.literalExpression "strata-nix.packages.\${system}.strata";
-      description = "The Strata package; `.override { gpuTargets = [ ... ]; }` builds for other GPUs.";
-    };
+    package = lib.mkPackageOption pkgs "strata" { };
     autoStart = lib.mkEnableOption "starting Strata at boot";
     host = lib.mkOption {
       type = lib.types.str;
@@ -82,6 +78,18 @@ in
       type = lib.types.str;
       description = "Model id the API reports.";
     };
+    model = lib.mkOption {
+      type = lib.types.nullOr (lib.types.either lib.types.package lib.types.str);
+      default = null;
+      example = lib.literalExpression ''"/srv/strata/gyro-s"'';
+      description = ''
+        A directory holding the model as `model.gguf` and its pack as `pack/`,
+        as `pkgs.strata-iq-pack.mkPack` builds it. When set, {option}`tokenizer`
+        defaults to `''${model}/pack/tokenizer` and {option}`args` starts with
+        `--pack ''${model}/pack --native ''${model}/model.gguf`. Leave it unset
+        to give those yourself.
+      '';
+    };
     tokenizer = lib.mkOption {
       type = lib.types.str;
       description = "The pack's tokenizer directory.";
@@ -93,6 +101,7 @@ in
     };
     args = lib.mkOption {
       type = lib.types.listOf lib.types.str;
+      default = [ ];
       description = "Engine arguments (`strata generate --help`).";
     };
     effortPosition = lib.mkOption {
@@ -120,34 +129,48 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable {
-    systemd.services.strata = {
-      description = "Strata inference server";
-      after = [ "network.target" ];
-      wantedBy = lib.mkIf cfg.autoStart [ "multi-user.target" ];
-      inherit (cfg) environment;
-      serviceConfig = {
-        ExecStart = lib.escapeShellArgs [
-          (lib.getExe cfg.package)
-          "--config"
-          engineConfig
-          "--host"
-          cfg.host
-          "--port"
-          (toString cfg.port)
+  config = lib.mkMerge [
+    { nixpkgs.overlays = [ (import ./overlay.nix) ]; }
+    (lib.mkIf (cfg.model != null) {
+      services.strata = {
+        tokenizer = lib.mkDefault "${cfg.model}/pack/tokenizer";
+        args = lib.mkBefore [
+          "--pack"
+          "${cfg.model}/pack"
+          "--native"
+          "${cfg.model}/model.gguf"
         ];
-        DynamicUser = true;
-        StateDirectory = "strata";
-        WorkingDirectory = stateDir;
-        SupplementaryGroups = [
-          "render"
-          "video"
-        ];
-        LimitMEMLOCK = "infinity";
-        MemorySwapMax = 0;
-        Restart = "on-failure";
-        RestartSec = 30;
       };
-    };
-  };
+    })
+    (lib.mkIf cfg.enable {
+      systemd.services.strata = {
+        description = "Strata inference server";
+        after = [ "network.target" ];
+        wantedBy = lib.mkIf cfg.autoStart [ "multi-user.target" ];
+        inherit (cfg) environment;
+        serviceConfig = {
+          ExecStart = lib.escapeShellArgs [
+            (lib.getExe cfg.package)
+            "--config"
+            engineConfig
+            "--host"
+            cfg.host
+            "--port"
+            (toString cfg.port)
+          ];
+          DynamicUser = true;
+          StateDirectory = "strata";
+          WorkingDirectory = stateDir;
+          SupplementaryGroups = [
+            "render"
+            "video"
+          ];
+          LimitMEMLOCK = "infinity";
+          MemorySwapMax = 0;
+          Restart = "on-failure";
+          RestartSec = 30;
+        };
+      };
+    })
+  ];
 }
