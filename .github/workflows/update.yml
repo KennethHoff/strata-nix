@@ -1,0 +1,50 @@
+name: Update Strata
+
+# Weekly bump of versions.nix to Strata's newest release tag, with the ggml pin
+# read from that tag's CMakeLists.txt. The gate evaluates the package and runs
+# the module check; the HIP build itself is too large for a hosted runner, so the
+# PR is left open for a build on a ROCm machine instead of auto-merging.
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
+
+      - name: Run updater
+        run: nix run .#update
+
+      - name: Summarize changes
+        run: |
+          if git diff --quiet -- versions.nix; then
+            echo "Already up to date." >> "$GITHUB_STEP_SUMMARY"
+          else
+            { echo '```diff'; git diff -- versions.nix; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Gate on evaluation and the module check
+        run: |
+          nix eval --raw .#packages.x86_64-linux.strata.drvPath
+          nix build -L --no-link .#checks.x86_64-linux.module
+
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          add-paths: versions.nix
+          branch: auto-update-strata
+          delete-branch: true
+          commit-message: "chore: update strata"
+          title: "chore: update strata"
+          body: |
+            Automated weekly bump of Strata and its ggml pin.
+            Build `.#checks.x86_64-linux.version` on a ROCm machine before merging.
