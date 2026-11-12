@@ -72,8 +72,9 @@ services.strata.package = strata-nix.packages.x86_64-linux.strata.override {
 };
 ```
 
-`gyroPromptKernels = false` turns off the Gyro trellis prompt kernels, which
-are validated only on gfx1151 and hang an RX 6600 on long prompts.
+The Gyro trellis prompt kernels are off, since they hang an RX 6600 partway
+through long prompts. Upstream validates them only on gfx1151; turn them back on
+there with `.override { gyroPromptKernels = true; }`.
 
 ## Updating
 

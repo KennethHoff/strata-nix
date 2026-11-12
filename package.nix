@@ -8,7 +8,7 @@
 # HSA_OVERRIDE_GFX_VERSION=10.3.0. Strata's own tests pass on an RX 6600 that
 # way, apart from CPU-side bit-exactness checks against ggml on AVX2.
 #
-# ## Why gyroPromptKernels can be turned off
+# ## Why gyroPromptKernels is off by default
 #
 # Gyro's trellis prompt kernels are validated only on gfx1151. On an RX 6600
 # they hang the GPU partway through a 7K-token prompt (2 of 2 runs); without
@@ -39,7 +39,7 @@
   fetchzip,
   fetchFromGitHub,
   gpuTargets ? [ "gfx1030" ],
-  gyroPromptKernels ? true,
+  gyroPromptKernels ? false,
 }:
 let
   inherit (import ./versions.nix)
