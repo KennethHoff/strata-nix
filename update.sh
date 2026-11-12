@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run via `nix run .#update`. The wrapper provides git, curl, jq, sed and nix
-# on PATH.
+# Run via `nix run .#update-strata`. The wrapper provides git, curl, jq, sed and
+# nix on PATH.
 #
-# Strata's tools read GGUF files with llama.cpp's gguf-py, which its setup.py
-# downloads at the commit it names in LLAMA_CPP_COMMIT; that pin is read from
-# the newest release tag so both move together.
+# Strata's CMakeLists.txt pins the llama.cpp commit it takes ggml from, so the
+# ggml pin is read from the newest release tag and both pins move together.
 
 TAG=$(git ls-remote --tags --refs https://github.com/Niko1221/Strata 'v*' \
   | sed 's|.*refs/tags/||' | grep -E '^v[0-9]+(\.[0-9]+)+$' | sort -V | tail -1)
@@ -20,23 +19,23 @@ prefetch() {
 SRC_HASH=$(prefetch "https://github.com/Niko1221/Strata/archive/refs/tags/${TAG}.tar.gz")
 echo "srcHash: $SRC_HASH"
 
-LLAMA_CPP_REV=$(curl -fsSL "https://raw.githubusercontent.com/Niko1221/Strata/${TAG}/setup.py" \
-  | sed -n 's/^LLAMA_CPP_COMMIT = "\([0-9a-f]\{40\}\)".*/\1/p')
-if [ -z "$LLAMA_CPP_REV" ]; then
-  echo "No LLAMA_CPP_COMMIT found in Strata ${TAG}'s setup.py" >&2
+GGML_REV=$(curl -fsSL "https://raw.githubusercontent.com/Niko1221/Strata/${TAG}/CMakeLists.txt" \
+  | sed -n 's/.*GIT_TAG \([0-9a-f]\{40\}\).*/\1/p')
+if [ -z "$GGML_REV" ]; then
+  echo "No ggml GIT_TAG found in Strata ${TAG}'s CMakeLists.txt" >&2
   exit 1
 fi
-echo "llamaCppRev: $LLAMA_CPP_REV"
+echo "ggmlRev: $GGML_REV"
 
-LLAMA_CPP_HASH=$(prefetch "https://github.com/ggml-org/llama.cpp/archive/${LLAMA_CPP_REV}.tar.gz")
-echo "llamaCppHash: $LLAMA_CPP_HASH"
+GGML_HASH=$(prefetch "https://github.com/ggml-org/llama.cpp/archive/${GGML_REV}.tar.gz")
+echo "ggmlHash: $GGML_HASH"
 
 cat > versions.nix <<NIX
 {
   version = "${VERSION}";
   srcHash = "${SRC_HASH}";
-  llamaCppRev = "${LLAMA_CPP_REV}";
-  llamaCppHash = "${LLAMA_CPP_HASH}";
+  ggmlRev = "${GGML_REV}";
+  ggmlHash = "${GGML_HASH}";
 }
 NIX
 

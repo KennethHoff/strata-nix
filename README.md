@@ -153,7 +153,7 @@ reads from the SSD as needed:
 
 The result is the GGUF (linked from the Nix store, not copied) plus `pack/`.
 The next switch downloads the GGUF into the Nix store and packs it. The pack
-depends only on Strata's source and llama.cpp pin, so rebuilding the engine (another
+depends only on Strata's source and ggml pin, so rebuilding the engine (another
 GPU target, the Gyro kernels) doesn't re-pack the model. Garbage collection
 removes the GGUF only when no system generation refers to it.
 
@@ -363,9 +363,14 @@ For forks and maintainers: run this inside a clone of this repo.
 nix run .#update
 ```
 
-`versions.nix` also pins the llama.cpp commit Strata's `setup.py` names in
-`LLAMA_CPP_COMMIT`; the updater reads it from the release, and the build fails
-if the two drift apart.
+`versions.nix` also pins the llama.cpp commit Strata's CMake takes ggml from
+(its `GIT_TAG`), which the sandboxed build can't fetch; the updater reads it from
+the release, and the build fails if the two drift apart.
+
+The flake stays on Strata 0.2.12: on this machine 0.2.13.1 added about 1.8 s to
+every request (three runs each). 0.2.13.1 also ships ggml in its source and
+drops that `GIT_TAG`, so the updater stops with an error there instead of
+moving to it.
 
 ## Available options
 

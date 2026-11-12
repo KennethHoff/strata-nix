@@ -1,25 +1,24 @@
-# Strata's source, and the llama.cpp commit whose gguf-py its tools read GGUF
-# files with, as pinned in ./versions.nix. Shared by the engine and
-# strata-iq-pack.
+# Strata's source and the llama.cpp commit its ggml comes from, as pinned in
+# ./versions.nix. Shared by the engine and strata-iq-pack.
 { fetchzip, fetchFromGitHub }:
 let
   inherit (import ./versions.nix)
     version
     srcHash
-    llamaCppRev
-    llamaCppHash
+    ggmlRev
+    ggmlHash
     ;
 in
 {
-  inherit version llamaCppRev;
+  inherit version ggmlRev;
   src = fetchzip {
     url = "https://github.com/Niko1221/Strata/archive/refs/tags/v${version}.tar.gz";
     hash = srcHash;
   };
-  llamaCpp = fetchFromGitHub {
+  ggml = fetchFromGitHub {
     owner = "ggml-org";
     repo = "llama.cpp";
-    rev = llamaCppRev;
-    hash = llamaCppHash;
+    rev = ggmlRev;
+    hash = ggmlHash;
   };
 }

@@ -3,9 +3,9 @@
 #
 # ## Why it is not just the engine's bin/strata-iq-pack
 #
-# Packing is Python over Strata's source and llama.cpp's gguf-py; it never runs the
+# Packing is Python over Strata's source and ggml's gguf-py; it never runs the
 # HIP engine. A pack built with this changes only when Strata's source or the
-# llama.cpp pin does, not when the engine is rebuilt for another GPU or kernel set.
+# ggml pin does, not when the engine is rebuilt for another GPU or kernel set.
 {
   lib,
   stdenvNoCC,
@@ -15,7 +15,7 @@
 let
   sources = callPackage ./sources.nix { };
   python = callPackage ./python.nix { };
-  ggufPy = "${sources.llamaCpp}/gguf-py";
+  ggufPy = "${sources.ggml}/gguf-py";
 in
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "strata-iq-pack";
@@ -34,7 +34,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
 
   passthru = {
     inherit python ggufPy;
-    inherit (sources) src llamaCpp;
+    inherit (sources) src ggml;
     mkPack = callPackage ./mk-pack.nix { strata-iq-pack = finalAttrs.finalPackage; };
   };
 
