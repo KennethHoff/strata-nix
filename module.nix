@@ -1,6 +1,7 @@
 # services.strata: Strata's OpenAI/Anthropic-compatible server as a systemd
 # service. Importing it also adds pkgs.strata and pkgs.strata-iq-pack, enabled
-# or not, so a host can build model packs with pkgs.strata-iq-pack.mkPack.
+# or not, so a host can build model packs with pkgs.strata-iq-pack.mkPack,
+# and pkgs.strata-vision, the picture reader services.strata.vision runs.
 #
 # ## Why it is not started at boot by default
 #
@@ -12,6 +13,13 @@
 #
 # Its RAM tier holds the experts that miss VRAM; a swapped-out page turns a
 # memory read on the token path into a disk read.
+#
+# ## Why the mmproj is fetched by default
+#
+# Every Qwen3.8-Flash-Next quant Strata supports, Gyro's included, reads
+# pictures with ISTA-DASLab's mmproj; Strata's setup pins the same file and
+# commit. It is a separate download so turning pictures on never changes, and
+# so never rebuilds, the model's pack.
 #
 # ## Why the learned profile is named after the model
 #
@@ -31,31 +39,39 @@
 }:
 let
   cfg = config.services.strata;
+  vision = cfg.vision;
   stateDir = "/var/lib/strata";
-  engineConfig = pkgs.writeText "strata.json" (
-    builtins.toJSON (
-      {
-        exe = lib.getExe' cfg.package "strata";
-        args = cfg.args ++ [
-          "--max-context"
-          (toString cfg.maxContext)
-        ];
-        inherit (cfg) tokenizer;
-        cwd = stateDir;
-        log = "${stateDir}/strata.log";
-        model_name = cfg.modelName;
-        inherit (cfg) host port;
-        effort_position = cfg.effortPosition;
-        backend = "hip";
-      }
-      // lib.optionalAttrs (cfg.allowedHosts != [ ]) {
-        allowed_hosts = cfg.allowedHosts;
-      }
-      // lib.optionalAttrs cfg.learnExpertProfile {
-        expert_profile_save = "${stateDir}/expert-profile-${cfg.modelName}.bin";
-      }
-    )
-  );
+  engineConfig = pkgs.writeText "strata.json" (builtins.toJSON cfg.engineSettings);
+  engineSettings = {
+    exe = lib.getExe' cfg.package "strata";
+    args = cfg.args ++ [
+      "--max-context"
+      (toString cfg.maxContext)
+    ];
+    inherit (cfg) tokenizer;
+    cwd = stateDir;
+    log = "${stateDir}/strata.log";
+    model_name = cfg.modelName;
+    inherit (cfg) host port;
+    effort_position = cfg.effortPosition;
+    backend = "hip";
+  }
+  // lib.optionalAttrs (cfg.allowedHosts != [ ]) {
+    allowed_hosts = cfg.allowedHosts;
+  }
+  // lib.optionalAttrs vision.enable {
+    vision = {
+      exe = lib.getExe vision.package;
+      mmproj = toString vision.mmproj;
+      inherit (vision) model;
+      gpu = false;
+      max_tokens = vision.maxTokens;
+    }
+    // lib.optionalAttrs (vision.threads != null) { inherit (vision) threads; };
+  }
+  // lib.optionalAttrs cfg.learnExpertProfile {
+    expert_profile_save = "${stateDir}/expert-profile-${cfg.modelName}.bin";
+  };
 in
 {
   options.services.strata = {
@@ -129,6 +145,53 @@ in
       saving the expert ranking the engine learns from traffic, which the next
       start uses in place of the `--expert-profile` in {option}`args`
     '';
+    vision = {
+      enable = lib.mkEnableOption ''
+        pictures: OpenAI image_url parts and Anthropic image blocks, read on
+        the CPU by strata-vision and handed to the engine as embeddings
+      '';
+      package = lib.mkPackageOption pkgs "strata-vision" { };
+      mmproj = lib.mkOption {
+        type = lib.types.either lib.types.package lib.types.str;
+        default = pkgs.fetchurl {
+          name = "mmproj-Qwen3.8-Flash-Next-BF16.gguf";
+          url = "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/mmproj-Qwen3.8-Flash-Next-BF16.gguf";
+          hash = "sha256-sagiWXAoFqUzDXvXYHzZZ2sReA55/3NIwhED/zzkm9A=";
+        };
+        defaultText = lib.literalMD "ISTA-DASLab's `mmproj-Qwen3.8-Flash-Next-BF16.gguf` (0.9 GB), as Strata's setup pins it";
+        description = ''
+          The model's vision encoder and projector. The default fits every
+          Qwen3.8-Flash-Next quant, Gyro's included; Swift 1.5 has its own.
+        '';
+      };
+      model = lib.mkOption {
+        type = lib.types.str;
+        description = ''
+          The text model's GGUF (its first shard), which the reader opens for
+          the vocabulary only. Defaults to `''${model}/model.gguf` when
+          {option}`services.strata.model` is set.
+        '';
+      };
+      maxTokens = lib.mkOption {
+        type = lib.types.ints.unsigned;
+        default = 300;
+        description = ''
+          Most image tokens one picture becomes; 0 for no limit. 300 is
+          Strata's default for the CPU reader.
+        '';
+      };
+      threads = lib.mkOption {
+        type = lib.types.nullOr lib.types.ints.positive;
+        default = null;
+        description = "CPU threads the reader uses; null leaves it to the reader.";
+      };
+    };
+    engineSettings = lib.mkOption {
+      type = lib.types.attrs;
+      internal = true;
+      readOnly = true;
+      description = "The JSON config strata-server starts the engine from, as an attribute set.";
+    };
     environment = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
       default = { };
@@ -137,10 +200,12 @@ in
   };
 
   config = lib.mkMerge [
+    { services.strata = { inherit engineSettings; }; }
     { nixpkgs.overlays = [ (import ./overlay.nix) ]; }
     (lib.mkIf (cfg.model != null) {
       services.strata = {
         tokenizer = lib.mkDefault "${cfg.model}/pack/tokenizer";
+        vision.model = lib.mkDefault "${cfg.model}/model.gguf";
         args = lib.mkBefore [
           "--pack"
           "${cfg.model}/pack"
@@ -149,6 +214,7 @@ in
         ];
       };
     })
+    (lib.mkIf vision.enable { services.strata.args = lib.mkAfter [ "--vision" ]; })
     (lib.mkIf cfg.enable {
       systemd.services.strata = {
         description = "Strata inference server";
