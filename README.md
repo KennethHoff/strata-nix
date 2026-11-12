@@ -347,8 +347,9 @@ services.strata.package = pkgs.strata.override {
 | --- | --- |
 | `packages.x86_64-linux.strata` (`default`) | `strata` (engine), `strata-server`, `strata-iq-pack` |
 | `packages.x86_64-linux.strata-iq-pack` | `strata-iq-pack` alone, without ROCm; `.mkPack` builds a model's pack |
+| `packages.x86_64-linux.strata-vision` | `strata-vision`, the CPU picture reader `services.strata.vision` runs |
 | `nixosModules.default` | `services.strata` |
-| `overlays.default` | adds `pkgs.strata` and `pkgs.strata-iq-pack` (the NixOS module applies it itself) |
+| `overlays.default` | adds `pkgs.strata`, `pkgs.strata-iq-pack` and `pkgs.strata-vision` (the NixOS module applies it itself) |
 | `apps.x86_64-linux.update` | bumps `versions.nix` to the newest release |
 
 ```bash
@@ -391,6 +392,11 @@ All under `services.strata`:
 | `args` | `[ ]` | Engine arguments (`strata --help`). |
 | `effortPosition` | `"start"` | Where a request's reasoning effort goes in the prompt: `"start"` (Strata's default) or `"end"`, which keeps the cached conversation when the effort changes. |
 | `learnExpertProfile` | `false` | Saves the expert ranking learned from traffic to `/var/lib/strata`; the next start uses it instead of `--expert-profile`. |
+| `vision.enable` | `false` | Accepts pictures (OpenAI `image_url`, Anthropic `image` blocks); see below. |
+| `vision.mmproj` | ISTA's Flash-Next mmproj | The model's picture encoder; the default fits every Qwen3.8-Flash-Next quant, Gyro's included. |
+| `vision.model` | from `model` | The text GGUF the reader takes the vocabulary from. |
+| `vision.maxTokens` | `300` | Most image tokens one picture becomes (`0`: no limit). |
+| `vision.threads` | `null` | CPU threads of the reader. |
 | `environment` | `{ }` | Environment of the server and engine, e.g. `HSA_OVERRIDE_GFX_VERSION`. |
 
 ### `model`
@@ -418,6 +424,18 @@ The tokenizer is only a default, so setting `tokenizer` yourself wins; the two
 arguments always come first in `args`. With `model` unset, `tokenizer` and the
 `--pack`/`--native` arguments are yours to give, for a pack without a native
 GGUF or files laid out another way.
+
+### `vision`
+
+```nix
+services.strata.vision.enable = true;
+```
+
+adds `--vision` to the engine and starts `strata-vision` beside it, which reads
+each picture on the CPU with the model's mmproj (a 0.9 GB download, pinned to
+the commit Strata's setup uses) and hands the engine its embeddings. It takes
+no VRAM, which is what Strata does itself on cards under 24 GB. The mmproj is
+not part of the pack, so turning this on does not rebuild it.
 
 ## What optimizations have we done
 

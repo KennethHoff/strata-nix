@@ -1,7 +1,8 @@
 # services.strata turns its options into a strata.service that runs the
 # server on the configured address with an engine config holding them, and
 # importing it puts strata-iq-pack on pkgs. `model` fills in the tokenizer and
-# the pack arguments, and leaves them alone when unset.
+# the pack arguments, and leaves them alone when unset. `vision` adds --vision
+# and a `vision` section that reads the model's GGUF.
 # Evaluation only: the package's path is compared without building it.
 {
   pkgs,
@@ -57,6 +58,17 @@ let
       tokenizer = "/elsewhere/tokenizer";
     }).config.services.strata;
 
+  withVision =
+    (evalWith {
+      model = "/srv/strata/m";
+      vision = {
+        enable = true;
+        mmproj = "/srv/strata/mmproj.gguf";
+        threads = 4;
+      };
+    }).config;
+  visionConfig = withVision.services.strata.engineSettings;
+
   expect = name: ok: if ok then name else throw "strata module check failed: ${name}";
   results = [
     (expect "runs strata-server" (lib.hasPrefix "${strata}/bin/strata-server --config " execStart))
@@ -80,6 +92,16 @@ let
         "--kv"
         "int8"
       ]
+    ))
+    (expect "no vision section by default" (!(manual.config.services.strata.engineSettings ? vision)))
+    (expect "vision adds --vision last" (lib.last withVision.services.strata.args == "--vision"))
+    (expect "vision reads the model's GGUF" (visionConfig.vision.model == "/srv/strata/m/model.gguf"))
+    (expect "vision runs the CPU reader" (
+      visionConfig.vision.gpu == false
+      && lib.hasSuffix "/bin/strata-vision" visionConfig.vision.exe
+      && visionConfig.vision.mmproj == "/srv/strata/mmproj.gguf"
+      && visionConfig.vision.max_tokens == 300
+      && visionConfig.vision.threads == 4
     ))
     (expect "an explicit tokenizer wins over model" (
       withModelAndTokenizer.tokenizer == "/elsewhere/tokenizer"
