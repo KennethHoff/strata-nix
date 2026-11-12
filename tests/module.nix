@@ -40,6 +40,7 @@ let
   };
   service = manual.config.systemd.services.strata;
   execStart = builtins.unsafeDiscardStringContext service.serviceConfig.ExecStart;
+  engineConfig = builtins.elemAt (lib.splitString " " service.serviceConfig.ExecStart) 2;
   strata = builtins.unsafeDiscardStringContext (toString manual.config.services.strata.package);
 
   withModel =
@@ -85,7 +86,11 @@ let
     ))
   ];
 in
-pkgs.runCommand "strata-module-test" { } ''
+pkgs.runCommand "strata-module-test" { nativeBuildInputs = [ pkgs.jq ]; } ''
   echo ${lib.escapeShellArgs results}
+  # The server reads AMD cards and keeps CUDA-only engine settings off only
+  # when its config names the HIP backend.
+  jq -e '.backend == "hip"' ${engineConfig} > /dev/null \
+    || { echo "strata module check failed: engine config names the hip backend"; exit 1; }
   mkdir -p "$out"
 ''

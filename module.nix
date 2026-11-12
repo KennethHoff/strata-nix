@@ -17,6 +17,12 @@
 #
 # The server starts from any saved profile whose layer and expert counts match
 # the configured one, so two quants of one model would share a single file.
+#
+# ## Why the config names the HIP backend
+#
+# Without `"backend": "hip"` the server takes the card for an NVIDIA one: it
+# reports no GPU readings and hands the engine CUDA-tuned GDN settings
+# (STRATA_GDN_TC, STRATA_GDN_CONVL2). The package is a HIP build only.
 {
   config,
   lib,
@@ -40,6 +46,7 @@ let
         model_name = cfg.modelName;
         inherit (cfg) host port;
         effort_position = cfg.effortPosition;
+        backend = "hip";
       }
       // lib.optionalAttrs (cfg.allowedHosts != [ ]) {
         allowed_hosts = cfg.allowedHosts;
