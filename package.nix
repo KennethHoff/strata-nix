@@ -11,8 +11,9 @@
 # ## Why gyroPromptKernels is off by default
 #
 # Gyro's trellis prompt kernels are validated only on gfx1151. On an RX 6600
-# they hang the GPU partway through a 7K-token prompt (2 of 2 runs); without
-# them the same prompt read cleanly in 5 of 5 runs at ~158 tok/s.
+# they hung the GPU partway through a 7.4K-token prompt in every run, also with
+# STRATA_HIP_ADAPT_KERNEL_COPY and STRATA_HIP_PROMPT_F16; without them the same
+# prompt read cleanly in 5 of 5 runs at ~158 tok/s.
 #
 # ## Why ggml is a second pin
 #
@@ -25,7 +26,9 @@
 #
 # bin/strata is the engine. bin/strata-server is Strata's Python server
 # (OpenAI and Anthropic APIs plus a web UI), which starts the engine from a
-# JSON config. bin/strata-iq-pack prepares a pack from a native GGUF.
+# JSON config. bin/strata-iq-pack prepares a pack from a native GGUF; build
+# packs with the strata-iq-pack package (./iq-pack.nix) instead, so they
+# outlive engine rebuilds.
 # share/strata is the source tree: the server and tools resolve data/, serve/
 # and tools/ relative to their own files.
 {
@@ -36,46 +39,19 @@
   makeWrapper,
   python3,
   rocmPackages,
-  fetchzip,
-  fetchFromGitHub,
+  callPackage,
   gpuTargets ? [ "gfx1030" ],
   gyroPromptKernels ? false,
 }:
 let
-  inherit (import ./versions.nix)
+  sources = callPackage ./sources.nix { };
+  inherit (sources)
     version
-    srcHash
+    src
+    ggml
     ggmlRev
-    ggmlHash
     ;
-  src = fetchzip {
-    url = "https://github.com/Niko1221/Strata/archive/refs/tags/v${version}.tar.gz";
-    hash = srcHash;
-  };
-  ggml = fetchFromGitHub {
-    owner = "ggml-org";
-    repo = "llama.cpp";
-    rev = ggmlRev;
-    hash = ggmlHash;
-  };
-  python = python3.withPackages (
-    ps: with ps; [
-      certifi
-      charset-normalizer
-      idna
-      jinja2
-      markupsafe
-      numpy
-      pillow
-      psutil
-      pyyaml
-      regex
-      requests
-      tqdm
-      truststore
-      urllib3
-    ]
-  );
+  python = callPackage ./python.nix { };
 in
 stdenv.mkDerivation {
   pname = "strata";

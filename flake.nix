@@ -13,12 +13,11 @@
     {
       packages = forAllSystems (pkgs: rec {
         strata = pkgs.callPackage ./package.nix { };
+        strata-iq-pack = pkgs.callPackage ./iq-pack.nix { };
         default = strata;
       });
 
-      overlays.default = final: _: {
-        strata = final.callPackage ./package.nix { };
-      };
+      overlays.default = import ./overlay.nix;
 
       nixosModules = rec {
         strata = ./module.nix;
