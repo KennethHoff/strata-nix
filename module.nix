@@ -102,7 +102,7 @@ in
     args = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
-      description = "Engine arguments (`strata generate --help`).";
+      description = "Engine arguments (`strata --help`).";
     };
     effortPosition = lib.mkOption {
       type = lib.types.enum [

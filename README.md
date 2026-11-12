@@ -5,14 +5,13 @@
 > work on the setup below (RX 6600, 8 GB VRAM, 32 GB RAM), but do not expect
 > continued support.
 
-It is tuned for one machine: an **AMD RX 6600 with 8 GB of VRAM and 32 GB of
-RAM**. The `gfx1030` build target follows from that card. For other
-hardware, fork it and adjust.
+It is tuned for that one machine. The `gfx1030` build target follows from that
+card. For other hardware, fork it and adjust.
 
 A Nix flake for [Strata](https://github.com/Niko1221/Strata), the MoE inference
 engine with a VRAM/RAM/SSD expert cache, built for AMD GPUs through HIP/ROCm.
 It packages the engine and its OpenAI/Anthropic-compatible server, and runs the
-server as a NixOS service. x86_64-linux only, since nixpkgs ships ROCm only there.
+server as a NixOS service. x86_64-linux only.
 
 ## 1. Prerequisites
 
@@ -24,10 +23,13 @@ server as a NixOS service. x86_64-linux only, since nixpkgs ships ROCm only ther
 - **The `amdgpu` kernel driver**, which NixOS loads by default on AMD GPUs.
   The engine reaches the GPU through `/dev/kfd` and `/dev/dri`; the service
   joins the `render` and `video` groups for that.
-- **RAM and disk for the model.** The example model is a 58 GB file and its
-  pack about 1.5 GB more; with 32 GB of RAM the engine keeps 20 GiB of experts
-  in RAM and reads the rest from disk on every use, so put the model on the
-  fastest SSD you have. With step 3a that is wherever `/nix/store` lives; step
+- **Memory and disk for the model.** The example model, Gyro-S, is a 58 GB file
+  and its pack adds about 1.5 GB. Upstream says it needs 27.6 GB of VRAM and
+  RAM together; the rest of the file, its n-gram table, stays on the SSD. Here
+  the RAM tier is capped at 20 GiB (`--resident-budget-gib`) and shrinks to the
+  free RAM at start minus `STRATA_RESIDENT_HEADROOM_GIB` (set in step 2), and experts beyond VRAM and RAM
+  are read from disk on every use, so put the model on the fastest SSD you
+  have. With step 3a that is wherever `/nix/store` lives; step
   3b lets you pick the drive.
 - **Time for the first build.** No binary cache carries Strata, so the first
   switch compiles the HIP engine locally; ROCm itself comes from
@@ -35,16 +37,19 @@ server as a NixOS service. x86_64-linux only, since nixpkgs ships ROCm only ther
 
 ## 2. Installing and wiring up the Strata server
 
-Add the flake and import its module. The module also adds `pkgs.strata` and
-`pkgs.strata-iq-pack`:
+Add the flake and import its module. These are additions to your existing
+flake, whose `nixpkgs` input is your own; the module also adds `pkgs.strata`
+and `pkgs.strata-iq-pack`:
 
 ```nix
 {
+  # …your existing inputs, including nixpkgs
   inputs.strata-nix = {
     url = "github:kennethhoff/strata-nix";
     inputs.nixpkgs.follows = "nixpkgs";
   };
 
+  # …your existing outputs; the host's modules list gains these two entries
   outputs = { nixpkgs, strata-nix, ... }: {
     nixosConfigurations.my-host = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
@@ -57,15 +62,21 @@ Add the flake and import its module. The module also adds `pkgs.strata` and
 }
 ```
 
-Then configure the server in `strata.nix`. These are the settings this flake is
-tuned for (RX 6600, 8 GB VRAM, 32 GB RAM); `model` comes from step 3a or 3b:
+This was tested on nixos-unstable. With the `follows` line the build uses your
+nixpkgs, so a different one (a stable release, say) means a different ROCm,
+which may not be in cache.nixos.org.
+
+Then configure the server in `strata.nix` (if your flake is a git repo, run
+`git add strata.nix`, or the flake won't see it). These are the settings this
+flake is tuned for. Replace the `model` line with the one from step 3a or 3b;
+it throws until you do:
 
 ```nix
 { config, pkgs, ... }:
 {
   services.strata = {
     enable = true;
-    model = …; # step 3a or 3b
+    model = throw "replace this line with the model line from step 3a or 3b";
     modelName = "gyro-s";
     maxContext = 131072;
     # Changing the thinking level mid-session keeps the cached conversation.
@@ -107,21 +118,27 @@ The server isn't started at boot, since its expert cache fills the GPU for as
 long as it runs: `systemctl start strata` starts it, and
 `services.strata.autoStart = true` starts it at boot. It listens on
 `127.0.0.1:8080` (`services.strata.host` and `port`) with the OpenAI API under
-`/v1` and the Anthropic API at `/v1/messages`. `strata generate --help` lists
-the engine's arguments.
+`/v1` and the Anthropic API at `/v1/messages`. To list the engine's arguments
+with the same build the service runs, from your flake's directory:
+
+```bash
+nix shell .#nixosConfigurations.my-host.config.services.strata.package -c strata --help
+```
 
 ## 3a. Automatic model download
 
 `pkgs.strata-iq-pack.mkPack` takes a GGUF (usually a `fetchurl`) and builds
-the pack Strata reads, in the layout `services.strata.model` expects. For Qwen3.8-Flash-Next Gyro-S (27.6 GiB of weights, a 58 GB file with its
-n-gram table):
+the pack Strata reads, in the layout `services.strata.model` expects. For Qwen3.8-Flash-Next Gyro-S, put this in `strata.nix` in place of
+step 2's `model` line. The 58 GB file is 27.6 GB of weights Strata keeps in VRAM
+and RAM plus Gyro's n-gram table (PLE, per-layer embeddings), which Strata
+reads from the SSD as needed:
 
 ```nix
-# strata.nix
+# strata.nix: the `model` line replaces step 2's
 { pkgs, ... }:
 {
   services.strata = {
-    enable = true;
+    # …enable, modelName and the rest stay as in step 2
     model = pkgs.strata-iq-pack.mkPack {
       name = "strata-gyro-s";
       gguf = pkgs.fetchurl {
@@ -130,14 +147,13 @@ n-gram table):
       };
       packArgs = [ "--compat-bf16" ];
     };
-    modelName = "gyro-s";
-    # …the rest of step 2
   };
 }
 ```
 
+The result is the GGUF (linked from the Nix store, not copied) plus `pack/`.
 The next switch downloads the GGUF into the Nix store and packs it. The pack
-depends only on Strata's source and ggml pin, so rebuilding the engine (another
+depends only on Strata's source and llama.cpp pin, so rebuilding the engine (another
 GPU target, the Gyro kernels) doesn't re-pack the model. Garbage collection
 removes the GGUF only when no system generation refers to it.
 
@@ -150,25 +166,30 @@ To keep the model outside the Nix store, download it and build its pack once
 by hand:
 
 ```bash
-sudo mkdir -p /srv/strata/gyro-s
-sudo curl -L -o /srv/strata/gyro-s/model.gguf \
+sudo install -d -o "$USER" /srv/strata/gyro-s
+curl -fL -C - -o /srv/strata/gyro-s/model.gguf \
   https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF/resolve/257c95704b87e99d12e4b1cbd65794837009d587/Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf
-sudo nix run github:kennethhoff/strata-nix#strata-iq-pack -- \
+echo "c6ea1b08ca312f99095b27588ba35976b53f948268e7f91e7761926aa01d9c87  /srv/strata/gyro-s/model.gguf" | sha256sum -c
+nix run .#nixosConfigurations.my-host.pkgs.strata-iq-pack -- \
   --gguf /srv/strata/gyro-s/model.gguf --out /srv/strata/gyro-s/pack --compat-bf16
-sudo chmod -R a+rX /srv/strata
+chmod -R a+rX /srv/strata/gyro-s
 ```
 
-Then point step 2 at that directory:
+The directory is owned by you, so nothing but `install` needs `sudo`. Run the
+`nix run` from your flake's directory, with `my-host` as in step 2; it uses the
+Strata your `flake.lock` pins, so the pack matches the server and works before
+the first switch. `-f` makes a failed download an error instead of saving an
+error page, `-C -` resumes an interrupted one, and `sha256sum -c` must print
+`OK`. Then point step
+2 at that directory by replacing its `model` line:
 
 ```nix
-# strata.nix
+# strata.nix: the `model` line replaces step 2's
 { ... }:
 {
   services.strata = {
-    enable = true;
+    # …enable, modelName and the rest stay as in step 2
     model = "/srv/strata/gyro-s";
-    modelName = "gyro-s";
-    # …the rest of step 2
   };
 }
 ```
@@ -182,7 +203,7 @@ services.strata = {
   args = [
     "--pack" "/srv/strata/gyro-s/pack"
     "--native" "/data/gguf/gyro-s.gguf"
-    # …the tuning arguments from step 2
+    # …the rest of step 2's args
   ];
 };
 ```
@@ -198,27 +219,29 @@ The service runs as a dynamic user with `ProtectSystem=strict`,
 - Re-run `strata-iq-pack` after a Strata update that changes the pack format;
   a Nix-built pack would do that by itself.
 
-`--compat-bf16` is what the Gyro-S example packs with; `strata-iq-pack --help`
-says when it applies and lists the other options.
+`--compat-bf16` is what the Gyro-S example packs with;
+the same `nix run` with `--help` says when it applies and lists the other
+options.
 
 ## 4. Checking it works
 
 ```bash
+sudo nixos-rebuild switch --flake .#my-host   # the host name from step 2
 sudo systemctl start strata
-curl -s http://127.0.0.1:8080/health
+journalctl -u strata -f   # the load, as it happens
+curl -sS http://127.0.0.1:8080/health
 ```
 
-The first start reads the model and fills the expert cache, which takes
-minutes; `/health` reports `"loaded": true` once it's ready. Then send one
-request:
+With step 3a the switch first downloads the GGUF and builds the engine and the
+pack. The first start reads the model and fills the expert cache, which takes
+minutes; until then `curl` prints nothing or `connection refused`, and
+`/health` reports `"loaded": true` once it's ready. Then send one request:
 
 ```bash
 curl -s http://127.0.0.1:8080/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model": "gyro-s", "messages": [{"role": "user", "content": "Say hi"}]}'
 ```
-
-`journalctl -u strata -f` shows the load as it happens.
 
 ## 5. Connecting a client
 
@@ -283,7 +306,8 @@ before exposing it beyond a trusted network.
   `STRATA_RESIDENT_HEADROOM_GIB`, so the prompt's buffers fit beside the RAM
   experts.
 - **403 from a client:** its `Host` name is missing from
-  `services.strata.allowedHosts` (see [Remote access](#remote-access)).
+  `services.strata.allowedHosts` (see [Remote access](#remote-access)); setting
+  an API key also turns the check off.
 - **Games or the desktop stutter:** the expert cache holds VRAM for as long as
   the server runs; `systemctl stop strata` gives it back.
 
@@ -299,9 +323,23 @@ services.strata.package = pkgs.strata.override {
 };
 ```
 
+Then delete the `HSA_OVERRIDE_GFX_VERSION` line from step 2: it makes the
+runtime report gfx1030, so it only belongs with the gfx1030 build on a
+gfx1031/gfx1032 card. `STRATA_HIP_PROMPT_F16` and
+`STRATA_HIP_ADAPT_KERNEL_COPY` are gfx1030 workarounds too; drop them unless
+you hit what they fix. The RAM and VRAM numbers in `args` are tuned to this
+machine as well.
+
 The Gyro trellis prompt kernels are off, since they hang an RX 6600 partway
-through long prompts. Upstream validates them only on gfx1151; turn them back on
-there with `.override { gyroPromptKernels = true; }`.
+through long prompts. Upstream validates them only on gfx1151; to turn them
+back on for that GPU:
+
+```nix
+services.strata.package = pkgs.strata.override {
+  gpuTargets = [ "gfx1151" ];
+  gyroPromptKernels = true;
+};
+```
 
 ## Flake outputs
 
@@ -319,13 +357,15 @@ nix run github:kennethhoff/strata-nix -- --help   # strata-server
 
 ## Updating
 
+For forks and maintainers: run this inside a clone of this repo.
+
 ```bash
 nix run .#update
 ```
 
-Strata's CMake fetches llama.cpp's ggml at configure time, which the Nix sandbox
-cannot, so `versions.nix` pins that commit too. The updater reads it from the
-release's `CMakeLists.txt`, and the build fails if the two drift apart.
+`versions.nix` also pins the llama.cpp commit Strata's `setup.py` names in
+`LLAMA_CPP_COMMIT`; the updater reads it from the release, and the build fails
+if the two drift apart.
 
 ## Available options
 
@@ -343,7 +383,7 @@ All under `services.strata`:
 | `modelName` | (required) | The model id the API reports. |
 | `tokenizer` | from `model` | The pack's tokenizer directory; required when `model` is unset. |
 | `maxContext` | `65536` | Longest context the engine accepts, in tokens. |
-| `args` | `[ ]` | Engine arguments (`strata generate --help`). |
+| `args` | `[ ]` | Engine arguments (`strata --help`). |
 | `effortPosition` | `"start"` | Where a request's reasoning effort goes in the prompt: `"start"` (Strata's default) or `"end"`, which keeps the cached conversation when the effort changes. |
 | `learnExpertProfile` | `false` | Saves the expert ranking learned from traffic to `/var/lib/strata`; the next start uses it instead of `--expert-profile`. |
 | `environment` | `{ }` | Environment of the server and engine, e.g. `HSA_OVERRIDE_GFX_VERSION`. |
@@ -376,9 +416,10 @@ GGUF or files laid out another way.
 
 ## What optimizations have we done
 
-Everything below was measured on the machine this flake targets: RX 6600
-(gfx1032, 8 GB, PCIe 4.0 x8), Ryzen 9 3900X, 32 GB RAM, an NVMe SSD, three
-monitors, serving abliterated Gyro-S. Most figures are one run each, and two
+Everything below was measured with Strata 0.2.12 on the machine this flake
+targets: RX 6600 (gfx1032, 8 GB, PCIe 4.0 x8), Ryzen 9 3900X, 32 GB RAM, an NVMe SSD, three
+monitors, serving an abliterated variant of Gyro-S (not the standard one step 3a
+installs, which wasn't benchmarked, so the figures may not carry over). Most figures are one run each, and two
 identical runs differed by up to 3%, so treat gains inside that as noise.
 
 These are performance benchmarks only. No intelligence or answer-quality
@@ -399,7 +440,6 @@ below already in) against the settings in step 2:
 | 25K-token prompt | 164 s (163 tok/s) | 104 s (258 tok/s) |
 | 9.2K / 9.4K-token prompt | 53 s / 53 s | 36 s / 37 s |
 | Decode (16 prompts) | 18.9 tok/s | 20.2 tok/s |
-| Fixed wait per request | 3.1 s | 2.9 s |
 | Experts cached in VRAM | 1,526 | 1,956 |
 | Prompt chunk | 2,816 tokens | 3,328 tokens |
 | Context cap | 65,536 | 131,072 |
@@ -411,14 +451,21 @@ expect 258 tok/s in practice. Over seven real agent requests, prompts read at
 about 127 tok/s, half the benchmark rate. Use the table to compare settings,
 not to predict real speed.
 
+The prompt chunk is the number of prompt tokens read per batch (`--prefill`);
+its buffers come out of the VRAM expert cache, and `--prefill auto` picks the
+largest chunk the cache can lend.
+
 Prompt reading is what matters most: in those real requests about 89% of the
 engine's time went to reading prompts and 11% to writing answers.
 
 ### Kept
 
+Each row below and in "Tried and dropped" compares against the state at the time
+it was tried, not against the result table, so figures differ between rows.
+
 | Setting | Why | Measured |
 | --- | --- | --- |
-| `gfx1030` build + `HSA_OVERRIDE_GFX_VERSION=10.3.0` | nixpkgs' rocBLAS has no gfx1032 kernels; a native build would mean rebuilding rocBLAS. | Builds and runs; Strata's own tests pass. |
+| `gfx1030` build + `HSA_OVERRIDE_GFX_VERSION=10.3.0` | nixpkgs' rocBLAS has no gfx1032 kernels; a native build would mean rebuilding rocBLAS. | Builds and runs; Strata's ctest suite passed on the card (run by hand once), except the CPU-side bit-exactness checks against ggml on AVX2. |
 | Gyro prompt kernels off (`gyroPromptKernels = false`) | With them the GPU hung partway through a 7.4K-token prompt, also with the workarounds below. | Without: 4 of 4 fresh 7.4K prompts read cleanly at 157-160 tok/s. |
 | `STRATA_HIP_ADAPT_KERNEL_COPY=1` | Upstream's workaround for a GPU hang during decode's expert swaps on RDNA2. | Stopped a decode hang seen once without it; cost not measured. |
 | `STRATA_HIP_PROMPT_F16=1` | rocBLAS on gfx1030 is tuned only for FP16-in, FP16-out products. | 9.2K prompt 68 s → 48 s, 9.4K 71 s → 36 s, same session, answers still correct. |
@@ -428,13 +475,13 @@ engine's time went to reading prompts and 11% to writing answers.
 | `--kv-resident 20480` with a 131K cap | The whole K/V was reserved in VRAM, taking room from the expert cache and the prompt chunk. | Raised the cap from 65K to 131K while prompts got faster (table above). A 107K-token conversation answered at 24 tok/s. |
 | `effortPosition = "end"` | Changing the thinking level rewrote the first system message, so the whole conversation was read again. | Not measured here. |
 | `--spec 2`, no draft head | Native packs require a verify window of 2+. | See the draft head below. |
-| `MemorySwapMax = 0` on the unit | A swapped-out expert turns a memory read into a disk read. | With swap allowed, a 25K prompt stalled for 2+ minutes with 15 GiB in swap. |
+| `MemorySwapMax = 0` on the unit (the module sets it) | A swapped-out expert turns a memory read into a disk read. | With swap allowed, a 25K prompt stalled for 2+ minutes with 15 GiB in swap. |
 
 ### Tried and dropped
 
 | Tried | Result |
 | --- | --- |
-| MTP draft head (`--mtp`, `--spec 4`) | Decode 20.2 → 23.3 tok/s, but its 1 GiB of VRAM cut the prompt chunk from 3,328 to 1,280 tokens: a 25K prompt read at 184 instead of 258 tok/s, and every request waited 1.7 s longer. Only replies over about 150 tokens come out ahead. |
+| MTP draft head (`--mtp`, `--spec 4`) | Decode 20.2 → 23.3 tok/s, but its 1 GiB of VRAM cut the prompt chunk from 3,328 to 1,280 tokens: a 25K prompt read at 184 instead of 258 tok/s, and every reply started 1.7 s later. Only replies over about 150 tokens come out ahead. |
 | `--kv-resident 8192` | More experts cached, but a 9.2K prompt took 82 s instead of 54 s. |
 | 262K context | 9.2K prompt 54 s → 84 s, since the cap's VRAM is reserved at start. |
 | 131K with `--kv q4_0`, before `--kv-resident` | VRAM expert cache 1.52 → 0.58 GiB, prompts down to 69 tok/s. |
@@ -454,4 +501,8 @@ engine's time went to reading prompts and 11% to writing answers.
   card in an upstream issue, at the cost of cache slots.
 - Enabling the RAM's XMP/DOCP profile: the DIMMs ran at 2666 MT/s though
   rated 3200.
+- `STRATA_RESIDENT_PIN=0`: Strata's troubleshooting guide says a 32 GB PC
+  can stall with `--resident-budget-gib` because the budget is locked in RAM,
+  leaving the OS little room; this keeps it pageable. This machine is such a
+  PC with a 20 GiB budget.
 - More RAM: room for `--kv-grow`, the PLE table in RAM and a larger quant.
