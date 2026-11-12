@@ -438,21 +438,27 @@ answers is unmeasured.
 ### The result
 
 Same prompts, before the last round of tuning (the hang and out-of-memory fixes
-below already in) against the settings in step 2:
+below already in) against the settings in step 2, first with the RAM at
+2666 MT/s (one run each), then at its rated 3200 MT/s (median of three runs,
+range in brackets):
 
-| | Before | After |
-| --- | --- | --- |
-| 25K-token prompt | 164 s (163 tok/s) | 104 s (258 tok/s) |
-| 9.2K / 9.4K-token prompt | 53 s / 53 s | 36 s / 37 s |
-| Decode (16 prompts) | 18.9 tok/s | 20.2 tok/s |
-| Experts cached in VRAM | 1,526 | 1,956 |
-| Prompt chunk | 2,816 tokens | 3,328 tokens |
-| Context cap | 65,536 | 131,072 |
-| RAM free with Strata loaded | 5.1-6.7 GiB | 4.2-4.7 GiB |
+| | Before | After, 2666 MT/s | After, 3200 MT/s |
+| --- | --- | --- | --- |
+| 25K-token prompt | 164 s (163 tok/s) | 104 s (258 tok/s) | 98 s (274 tok/s; 241-278) |
+| 9.2K / 9.4K-token prompt | 53 s / 53 s | 36 s / 37 s | 33 s / 34 s (33-39 / 33-40) |
+| Decode (16 prompts) | 18.9 tok/s | 20.2 tok/s | 20.5 tok/s (20.4-20.8) |
+| Experts cached in VRAM | 1,526 | 1,956 | 1,956 |
+| Prompt chunk | 2,816 tokens | 3,328 tokens | 3,328 tokens |
+| Context cap | 65,536 | 131,072 | 131,072 |
+| RAM free with Strata loaded | 5.1-6.7 GiB | 4.2-4.7 GiB | 6.5 GiB (first run only) |
+
+The slowest of the three 3200 MT/s runs was slow throughout (prompts 39-40 s),
+which points at the machine rather than Strata; the other two read the 25K
+prompt at 274-278 tok/s.
 
 These are synthetic benchmarks: long, repetitive lists of numbered records
 with one question at the end, which read faster than real conversations. Don't
-expect 258 tok/s in practice. Over seven real agent requests, prompts read at
+expect 258-274 tok/s in practice. Over seven real agent requests, prompts read at
 about 127 tok/s, half the benchmark rate. Use the table to compare settings,
 not to predict real speed.
 
@@ -504,8 +510,6 @@ it was tried, not against the result table, so figures differ between rows.
   cards, at a small cost in answer quality.
 - `--adapt-swaps 0`: stopped "no progress for 60 s" prompt stalls on a gfx1031
   card in an upstream issue, at the cost of cache slots.
-- Enabling the RAM's XMP/DOCP profile: the DIMMs ran at 2666 MT/s though
-  rated 3200.
 - `STRATA_RESIDENT_PIN=0`: Strata's troubleshooting guide says a 32 GB PC
   can stall with `--resident-budget-gib` because the budget is locked in RAM,
   leaving the OS little room; this keeps it pageable. This machine is such a
