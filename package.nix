@@ -15,12 +15,13 @@
 # STRATA_HIP_ADAPT_KERNEL_COPY and STRATA_HIP_PROMPT_F16; without them the same
 # prompt read cleanly in 5 of 5 runs at ~158 tok/s.
 #
-# ## Why ggml is a second pin
+# ## Why llama.cpp is a second pin
 #
-# Strata's CMake fetches llama.cpp's ggml at configure time, which a sandboxed
-# build cannot; STRATA_GGML_DIR points it at ./versions.nix's copy instead. The
-# Gyro prompt kernels are an overlay that turns itself off on any other ggml
-# commit, so the build fails loud when the two pins drift apart.
+# The engine builds from the ggml Strata ships in third_party/strata-ggml, but
+# its tools (strata-iq-pack among them) read GGUF files with llama.cpp's
+# gguf-py, which Strata's setup.py downloads at its LLAMA_CPP_COMMIT.
+# ./versions.nix pins that commit, and the build fails loud when setup.py
+# names another.
 #
 # ## Layout
 #
@@ -48,8 +49,8 @@ let
   inherit (sources)
     version
     src
-    ggml
-    ggmlRev
+    llamaCpp
+    llamaCppRev
     ;
   python = callPackage ./python.nix { };
 in
@@ -74,9 +75,9 @@ stdenv.mkDerivation {
   ];
 
   postPatch = ''
-    pinned=$(sed -n 's/.*GIT_TAG \([0-9a-f]\{40\}\).*/\1/p' CMakeLists.txt)
-    if [ "$pinned" != "${ggmlRev}" ]; then
-      echo "Strata pins ggml $pinned but versions.nix has ${ggmlRev}; run nix run .#update" >&2
+    pinned=$(sed -n 's/^LLAMA_CPP_COMMIT = "\([0-9a-f]\{40\}\)".*/\1/p' setup.py)
+    if [ "$pinned" != "${llamaCppRev}" ]; then
+      echo "Strata's setup.py pins llama.cpp $pinned but versions.nix has ${llamaCppRev}; run nix run .#update" >&2
       exit 1
     fi
   '';
@@ -89,7 +90,6 @@ stdenv.mkDerivation {
     (lib.cmakeBool "STRATA_BUILD_TESTS" false)
     (lib.cmakeFeature "CMAKE_HIP_ARCHITECTURES" (lib.concatStringsSep ";" gpuTargets))
     (lib.cmakeFeature "CMAKE_HIP_COMPILER" "${rocmPackages.clr.hipClangPath}/clang++")
-    (lib.cmakeFeature "STRATA_GGML_DIR" "${ggml}")
   ];
   ninjaFlags = [ "strata" ];
 
@@ -105,14 +105,14 @@ stdenv.mkDerivation {
       --prefix PYTHONPATH : $out/share/strata
     makeWrapper ${lib.getExe python} $out/bin/strata-iq-pack \
       --add-flags $out/share/strata/tools/iq_pack.py \
-      --set STRATA_GGUF_PY ${ggml}/gguf-py
+      --set STRATA_GGUF_PY ${llamaCpp}/gguf-py
 
     runHook postInstall
   '';
 
   passthru = {
-    inherit python ggml;
-    ggufPy = "${ggml}/gguf-py";
+    inherit python llamaCpp;
+    ggufPy = "${llamaCpp}/gguf-py";
   };
 
   meta = {
