@@ -437,7 +437,114 @@ the commit Strata's setup uses) and hands the engine its embeddings. It takes
 no VRAM, which is what Strata does itself on cards under 24 GB. The mmproj is
 not part of the pack, so turning this on does not rebuild it.
 
-## What optimizations have we done
+## RX 9070 XT results
+
+Measured on 2026-11-16 with Strata 0.2.12 on the same PC after an upgrade: an
+RX 9070 XT (gfx1201, 16 GB, PCIe 4.0 x16) running Strata alone, the RX 6600
+driving the desktop, and 96 GB of DDR4-3200. Strata is built with
+`gpuTargets = [ "gfx1201" ]`, without `HSA_OVERRIDE_GFX_VERSION`, and pinned to
+the card with `ROCR_VISIBLE_DEVICES`. Every figure comes from a trial instance
+of the service with the same unit settings, one run unless a range is given.
+
+### Configuration
+
+Gyro-M (agentionai's abliterated TQ2_0, the `-noPLE` file) with Delgon's
+standalone IQ4_NL n-gram table, `gyroPromptKernels = true`, the MTP draft head
+(`--mtp`, `--spec 4`, `--spec-min-p 0.5`), `--resident-budget-gib 40` and
+`--vram-reserve-mib 512`. The rest is as on the RX 6600: `--kv int8`,
+`--kv-resident 20480`, a 131K cap.
+
+A `-noPLE` file needs both `--ple-gguf <table>` and
+`--native-dense-gguf <model.gguf>`. With only the first, the engine reads the
+table as a weight shard and stops with `missing qwen4exp.block_count`. The
+table can't come from another model's GGUF either: a whole file fails on
+duplicate dense tensors, and a split shard's metadata names a different first
+shard.
+
+### Against the RX 6600
+
+The same `pkgs/strata/bench/full.sh` prompts as the RX 6600 table, all on
+Gyro-S:
+
+| | RX 6600, tuned | 9070 XT, RX 6600 settings | 9070 XT, + draft head |
+| --- | --- | --- | --- |
+| 25K-token prompt | 98 s (274 tok/s) | 18 s (1,496-1,515 tok/s) | 12 s (2,242 tok/s) |
+| 9.2K-token prompt | 33 s | 7 s (1,242 tok/s) | 4 s (2,053 tok/s) |
+| Decode (16 prompts) | 20.5 tok/s | 58.2 tok/s | 82.0 tok/s |
+| Experts cached in VRAM | 1,956 | 10,873 | not recorded |
+
+### Model comparison
+
+Strata's standard suite (`strata bench run`, standard-v1, against the trial
+server with `--url`), medians of three requests per case in tok/s. "RX 6600
+settings" is Gyro-S without the draft head; the other columns have the draft
+head and the 40 GiB budget. Ranges are over two runs.
+
+| | Gyro-S, RX 6600 settings | ISTA IQ2_XS + refusal projection | Gyro-S + kernels | Gyro-M + kernels |
+| --- | --- | --- | --- | --- |
+| prompt-4k read | 743 | 1,953-2,140 | 2,048-2,063 | 1,990-2,000 |
+| prompt-16k read | 1,644 | 2,908-2,951 | 2,732-2,771 | 2,740-2,742 |
+| Decode, short | 56.4 | 71.3-79.4 | 81.3-81.4 | 69.0-74.5 |
+| Decode, 4k / 16k | 60.3 / 61.7 | 68.1-68.5 / 68.6-70.1 | 85.6-87.3 / 79.0-85.4 | 69.6-76.1 / 67.8-68.9 |
+| Checks passed | 12/12 | 24/24 | 24/24 | 24/24 |
+
+The suite's 12 checks (instructions, retrieval, tool calls) passed for every
+model, so they don't separate quality. By Strata's own KL figures Gyro-M is the
+closest of the three to the full model: about 0.157, level with IQ3_XXS,
+against 0.236 for IQ2_XS and 0.268 for Gyro-S.
+
+A replay of the 23 coding-agent turns in Strata's
+`tools/agent_turns_bench.py` (4K to about 100K tokens, each turn extending the
+last, 256 new tokens a turn), sent to the running server:
+
+| | Wall time | Median decode | Median prompt read | Tool calls |
+| --- | --- | --- | --- | --- |
+| IQ2_XS + refusal projection | 198 s | 83.5 tok/s | 2,204 tok/s | 20 of 23 |
+| Gyro-S + kernels | 200 s | 87.1 tok/s | 2,064 tok/s | 20 of 23 |
+| Gyro-M + kernels | 204 s | 74.2 tok/s | 2,029 tok/s | 18 of 23 |
+| Gyro-M, no kernels | 249 s | 73.2 tok/s | 1,622 tok/s | 19 of 23 |
+
+Turns without a tool call ended mid-thought at the 256-token cap. None
+produced a malformed call.
+
+### Kept
+
+| Setting | Measured |
+| --- | --- |
+| Strata on the 9070 XT, the desktop on the RX 6600 | The RX 6600 drives every monitor, so long prompts don't stall the desktop and Strata gets all 16 GB. |
+| `--vram-reserve-mib 512` | Strata's own reserve for a card that drives no display. |
+| MTP draft head, `--spec 4` | Gyro-S decode 58 → 82 tok/s, 9K-token prompts 1,240 → 2,050 tok/s. Ten record lookups over 9K-68K-token prompts scored 9 of 10 with and without it (`pkgs/strata/bench/accuracy.sh`). |
+| `--resident-budget-gib 40` | With the draft head, a 96K-token prompt read at 2,614 tok/s instead of 1,867. |
+| `gyroPromptKernels = true` | No hang on this card. Gyro-M 4K prompts 1,420 → 1,995 tok/s, 16K 2,415 → 2,740; the agent replay 249 → 204 s. |
+| Gyro-M | Strata's KL figures above; within 3% of the others in the agent replay. |
+
+The draft head does change some answers. The 25K-token question in `full.sh`
+(record 537) came back as record 767's value in 8 of 9 runs with the draft head
+at `--spec 4` and 1 of 4 at `--spec 2`, against 0 of 7 without it. The
+ten-question set above shows no difference, so this looks like one borderline
+question rather than a general loss.
+
+### Tried and dropped
+
+| Tried | Result |
+| --- | --- |
+| `--kv-resident 131072` | No faster, a 96K-token prompt included. |
+| `--batch 2` | Two requests at once gave 72.4 tok/s combined, against 82 for one alone; VRAM expert hits fell from 96% to 84%. |
+| `STRATA_HIP_PROMPT_F16=1` | 9K-token prompts read at 939-1,054 tok/s instead of about 2,000. It only helps gfx103x. |
+| The RX 6600 as a helper expert cache (`--expert-cache-device1`) | Hyprland crashed while the first prompt was read: the card that draws the desktop can't also run Strata. |
+| ISTA IQ2_XS with Strata's refusal projection | As fast as Gyro-M and 24/24 in the suite, but further from the full model and not abliterated in its weights. |
+| Qwen3.6-35B-A3B UD-Q4_K_XL | Decode 31-36 tok/s, and a wrong answer on a 96K-token prompt. |
+
+### Not tried yet
+
+- A 262K context cap: VRAM no longer limits it, but the model was trained to
+  262,144 tokens and nothing past 131K was measured.
+- Gyro-L: its pair-trellis expert types (TQP5-TQP7) have no kernels in the
+  source tree Strata's HIP build compiles, so its experts would likely run on
+  the CPU.
+- Power limits or undervolting.
+
+## What optimizations have we done on an RX 6600
 
 Everything below was measured with Strata 0.2.12 on the machine this flake
 targets: RX 6600 (gfx1032, 8 GB, PCIe 4.0 x8), Ryzen 9 3900X, 32 GB RAM, an NVMe SSD, three
