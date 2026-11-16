@@ -437,7 +437,106 @@ the commit Strata's setup uses) and hands the engine its embeddings. It takes
 no VRAM, which is what Strata does itself on cards under 24 GB. The mmproj is
 not part of the pack, so turning this on does not rebuild it.
 
+## What optimizations have we done
+
+Everything below was measured with Strata 0.2.12 on the machine this flake
+targets: RX 6600 (gfx1032, 8 GB, PCIe 4.0 x8), Ryzen 9 3900X, 32 GB RAM, an NVMe SSD, three
+monitors, serving an abliterated variant of Gyro-S (not the standard one step 3a
+installs, which wasn't benchmarked, so the figures may not carry over). Most figures are one run each, and two
+identical runs differed by up to 3%, so treat gains inside that as noise.
+
+These are performance benchmarks only. No intelligence or answer-quality
+benchmark has been run on this setup: the only checks were that benchmark
+answers came out right (a record looked up from a 9K-token list, and one from a
+107K-token context). Quality figures for Gyro-S itself are its author's. Some
+kept settings trade a little precision for speed (FP16 prompt math) or place
+the reasoning effort differently (`effortPosition = "end"`), and their effect on
+answers is unmeasured.
+
+### The result
+
+Same prompts, before the last round of tuning (the hang and out-of-memory fixes
+below already in) against the settings in step 2, first with the RAM at
+2666 MT/s (one run each), then at its rated 3200 MT/s (median of three runs,
+range in brackets):
+
+| | Before | After, 2666 MT/s | After, 3200 MT/s |
+| --- | --- | --- | --- |
+| 25K-token prompt | 164 s (163 tok/s) | 104 s (258 tok/s) | 98 s (274 tok/s; 241-278) |
+| 9.2K / 9.4K-token prompt | 53 s / 53 s | 36 s / 37 s | 33 s / 34 s (33-39 / 33-40) |
+| Decode (16 prompts) | 18.9 tok/s | 20.2 tok/s | 20.5 tok/s (20.4-20.8) |
+| Experts cached in VRAM | 1,526 | 1,956 | 1,956 |
+| Prompt chunk | 2,816 tokens | 3,328 tokens | 3,328 tokens |
+| Context cap | 65,536 | 131,072 | 131,072 |
+| RAM free with Strata loaded | 5.1-6.7 GiB | 4.2-4.7 GiB | 6.5 GiB (first run only) |
+
+The slowest of the three 3200 MT/s runs was slow throughout (prompts 39-40 s),
+which points at the machine rather than Strata; the other two read the 25K
+prompt at 274-278 tok/s.
+
+These are synthetic benchmarks: long, repetitive lists of numbered records
+with one question at the end, which read faster than real conversations. Don't
+expect 258-274 tok/s in practice. Over seven real agent requests, prompts read at
+about 127 tok/s, half the benchmark rate. Use the table to compare settings,
+not to predict real speed.
+
+The prompt chunk is the number of prompt tokens read per batch (`--prefill`);
+its buffers come out of the VRAM expert cache, and `--prefill auto` picks the
+largest chunk the cache can lend.
+
+Prompt reading is what matters most: in those real requests about 89% of the
+engine's time went to reading prompts and 11% to writing answers.
+
+### Kept
+
+Each row below and in "Tried and dropped" compares against the state at the time
+it was tried, not against the result table, so figures differ between rows.
+
+| Setting | Why | Measured |
+| --- | --- | --- |
+| `gfx1030` build + `HSA_OVERRIDE_GFX_VERSION=10.3.0` | nixpkgs' rocBLAS has no gfx1032 kernels; a native build would mean rebuilding rocBLAS. | Builds and runs; Strata's ctest suite passed on the card (run by hand once), except the CPU-side bit-exactness checks against ggml on AVX2. |
+| Gyro prompt kernels off (`gyroPromptKernels = false`) | With them the GPU hung partway through a 7.4K-token prompt, also with the workarounds below. | Without: 4 of 4 fresh 7.4K prompts read cleanly at 157-160 tok/s. |
+| `STRATA_HIP_ADAPT_KERNEL_COPY=1` | Upstream's workaround for a GPU hang during decode's expert swaps on RDNA2. | Stopped a decode hang seen once without it; cost not measured. |
+| `STRATA_HIP_PROMPT_F16=1` | rocBLAS on gfx1030 is tuned only for FP16-in, FP16-out products. | 9.2K prompt 68 s → 48 s, 9.4K 71 s → 36 s, same session, answers still correct. |
+| `--resident-budget-gib 20` | Unbounded, the engine put 24 GiB of experts in RAM and a 25K prompt got OOM-killed. | No more OOM kills; speed not compared. |
+| `STRATA_RESIDENT_HEADROOM_GIB=4` (was 6) | The RAM tier is cut to free RAM at start minus this; at 6 the 20 GiB budget came out at 17.7 GiB. | A bigger tier on a given day; how big depends on what the desktop holds at start. |
+| `STRATA_RAM_ADAPT=1` + `learnExpertProfile` | Experts missing from RAM are read from disk on every use; hot ones now replace unused ones. | 2,883 experts swapped in during one session; decode gain not separable from other changes. |
+| `--kv-resident 20480` with a 131K cap | The whole K/V was reserved in VRAM, taking room from the expert cache and the prompt chunk. | Raised the cap from 65K to 131K while prompts got faster (table above). A 107K-token conversation answered at 24 tok/s. |
+| `effortPosition = "end"` | Changing the thinking level rewrote the first system message, so the whole conversation was read again. | Not measured here. |
+| `--spec 2`, no draft head | Native packs require a verify window of 2+. | See the draft head below. |
+| `MemorySwapMax = 0` on the unit (the module sets it) | A swapped-out expert turns a memory read into a disk read. | With swap allowed, a 25K prompt stalled for 2+ minutes with 15 GiB in swap. |
+
+### Tried and dropped
+
+| Tried | Result |
+| --- | --- |
+| MTP draft head (`--mtp`, `--spec 4`) | Decode 20.2 → 23.3 tok/s, but its 1 GiB of VRAM cut the prompt chunk from 3,328 to 1,280 tokens: a 25K prompt read at 184 instead of 258 tok/s, and every reply started 1.7 s later. Only replies over about 150 tokens come out ahead. |
+| `--kv-resident 8192` | More experts cached, but a 9.2K prompt took 82 s instead of 54 s. |
+| 262K context | 9.2K prompt 54 s → 84 s, since the cap's VRAM is reserved at start. |
+| 131K with `--kv q4_0`, before `--kv-resident` | VRAM expert cache 1.52 → 0.58 GiB, prompts down to 69 tok/s. |
+| Letting the unit swap, headroom 10 GiB | Thrashing (above); the headroom does nothing without a budget flag. |
+| `--prefill-head-alias` | Crashed the engine on every second request (a known upstream bug). |
+| `STRATA_MTP_ROOM_MIN=1024` | 9.2K prompt 54 s → 68 s. |
+| `--mtp-q4 all` | Fewer experts cached and slower prompts, not more VRAM. |
+| `spec_min_p`, `pcie_frac` sweeps | Flat: the best value was within the 3% noise. |
+| `STRATA_SH_STREAM=1`, adaptive cache tuning | Within noise. |
+| llama.cpp with a dense 27B | About 3 tok/s, since over half the model ran on the CPU. |
+
+### Not tried yet
+
+- `STRATA_ROUTE_TAIL_SKIP=7`: upstream reports +10-20% decode on 12-16 GB
+  cards, at a small cost in answer quality.
+- `--adapt-swaps 0`: stopped "no progress for 60 s" prompt stalls on a gfx1031
+  card in an upstream issue, at the cost of cache slots.
+- `STRATA_RESIDENT_PIN=0`: Strata's troubleshooting guide says a 32 GB PC
+  can stall with `--resident-budget-gib` because the budget is locked in RAM,
+  leaving the OS little room; this keeps it pageable. This machine is such a
+  PC with a 20 GiB budget.
+- More RAM: room for `--kv-grow`, the PLE table in RAM and a larger quant.
 ## RX 9070 XT results
+
+A second card, not this flake's default target: the settings below live in
+the host config, and the module's defaults stay as described above.
 
 Measured on 2026-11-16 with Strata 0.2.12 on the same PC after an upgrade: an
 RX 9070 XT (gfx1201, 16 GB, PCIe 4.0 x16) running Strata alone, the RX 6600
@@ -544,99 +643,3 @@ question rather than a general loss.
   the CPU.
 - Power limits or undervolting.
 
-## What optimizations have we done on an RX 6600
-
-Everything below was measured with Strata 0.2.12 on the machine this flake
-targets: RX 6600 (gfx1032, 8 GB, PCIe 4.0 x8), Ryzen 9 3900X, 32 GB RAM, an NVMe SSD, three
-monitors, serving an abliterated variant of Gyro-S (not the standard one step 3a
-installs, which wasn't benchmarked, so the figures may not carry over). Most figures are one run each, and two
-identical runs differed by up to 3%, so treat gains inside that as noise.
-
-These are performance benchmarks only. No intelligence or answer-quality
-benchmark has been run on this setup: the only checks were that benchmark
-answers came out right (a record looked up from a 9K-token list, and one from a
-107K-token context). Quality figures for Gyro-S itself are its author's. Some
-kept settings trade a little precision for speed (FP16 prompt math) or place
-the reasoning effort differently (`effortPosition = "end"`), and their effect on
-answers is unmeasured.
-
-### The result
-
-Same prompts, before the last round of tuning (the hang and out-of-memory fixes
-below already in) against the settings in step 2, first with the RAM at
-2666 MT/s (one run each), then at its rated 3200 MT/s (median of three runs,
-range in brackets):
-
-| | Before | After, 2666 MT/s | After, 3200 MT/s |
-| --- | --- | --- | --- |
-| 25K-token prompt | 164 s (163 tok/s) | 104 s (258 tok/s) | 98 s (274 tok/s; 241-278) |
-| 9.2K / 9.4K-token prompt | 53 s / 53 s | 36 s / 37 s | 33 s / 34 s (33-39 / 33-40) |
-| Decode (16 prompts) | 18.9 tok/s | 20.2 tok/s | 20.5 tok/s (20.4-20.8) |
-| Experts cached in VRAM | 1,526 | 1,956 | 1,956 |
-| Prompt chunk | 2,816 tokens | 3,328 tokens | 3,328 tokens |
-| Context cap | 65,536 | 131,072 | 131,072 |
-| RAM free with Strata loaded | 5.1-6.7 GiB | 4.2-4.7 GiB | 6.5 GiB (first run only) |
-
-The slowest of the three 3200 MT/s runs was slow throughout (prompts 39-40 s),
-which points at the machine rather than Strata; the other two read the 25K
-prompt at 274-278 tok/s.
-
-These are synthetic benchmarks: long, repetitive lists of numbered records
-with one question at the end, which read faster than real conversations. Don't
-expect 258-274 tok/s in practice. Over seven real agent requests, prompts read at
-about 127 tok/s, half the benchmark rate. Use the table to compare settings,
-not to predict real speed.
-
-The prompt chunk is the number of prompt tokens read per batch (`--prefill`);
-its buffers come out of the VRAM expert cache, and `--prefill auto` picks the
-largest chunk the cache can lend.
-
-Prompt reading is what matters most: in those real requests about 89% of the
-engine's time went to reading prompts and 11% to writing answers.
-
-### Kept
-
-Each row below and in "Tried and dropped" compares against the state at the time
-it was tried, not against the result table, so figures differ between rows.
-
-| Setting | Why | Measured |
-| --- | --- | --- |
-| `gfx1030` build + `HSA_OVERRIDE_GFX_VERSION=10.3.0` | nixpkgs' rocBLAS has no gfx1032 kernels; a native build would mean rebuilding rocBLAS. | Builds and runs; Strata's ctest suite passed on the card (run by hand once), except the CPU-side bit-exactness checks against ggml on AVX2. |
-| Gyro prompt kernels off (`gyroPromptKernels = false`) | With them the GPU hung partway through a 7.4K-token prompt, also with the workarounds below. | Without: 4 of 4 fresh 7.4K prompts read cleanly at 157-160 tok/s. |
-| `STRATA_HIP_ADAPT_KERNEL_COPY=1` | Upstream's workaround for a GPU hang during decode's expert swaps on RDNA2. | Stopped a decode hang seen once without it; cost not measured. |
-| `STRATA_HIP_PROMPT_F16=1` | rocBLAS on gfx1030 is tuned only for FP16-in, FP16-out products. | 9.2K prompt 68 s → 48 s, 9.4K 71 s → 36 s, same session, answers still correct. |
-| `--resident-budget-gib 20` | Unbounded, the engine put 24 GiB of experts in RAM and a 25K prompt got OOM-killed. | No more OOM kills; speed not compared. |
-| `STRATA_RESIDENT_HEADROOM_GIB=4` (was 6) | The RAM tier is cut to free RAM at start minus this; at 6 the 20 GiB budget came out at 17.7 GiB. | A bigger tier on a given day; how big depends on what the desktop holds at start. |
-| `STRATA_RAM_ADAPT=1` + `learnExpertProfile` | Experts missing from RAM are read from disk on every use; hot ones now replace unused ones. | 2,883 experts swapped in during one session; decode gain not separable from other changes. |
-| `--kv-resident 20480` with a 131K cap | The whole K/V was reserved in VRAM, taking room from the expert cache and the prompt chunk. | Raised the cap from 65K to 131K while prompts got faster (table above). A 107K-token conversation answered at 24 tok/s. |
-| `effortPosition = "end"` | Changing the thinking level rewrote the first system message, so the whole conversation was read again. | Not measured here. |
-| `--spec 2`, no draft head | Native packs require a verify window of 2+. | See the draft head below. |
-| `MemorySwapMax = 0` on the unit (the module sets it) | A swapped-out expert turns a memory read into a disk read. | With swap allowed, a 25K prompt stalled for 2+ minutes with 15 GiB in swap. |
-
-### Tried and dropped
-
-| Tried | Result |
-| --- | --- |
-| MTP draft head (`--mtp`, `--spec 4`) | Decode 20.2 → 23.3 tok/s, but its 1 GiB of VRAM cut the prompt chunk from 3,328 to 1,280 tokens: a 25K prompt read at 184 instead of 258 tok/s, and every reply started 1.7 s later. Only replies over about 150 tokens come out ahead. |
-| `--kv-resident 8192` | More experts cached, but a 9.2K prompt took 82 s instead of 54 s. |
-| 262K context | 9.2K prompt 54 s → 84 s, since the cap's VRAM is reserved at start. |
-| 131K with `--kv q4_0`, before `--kv-resident` | VRAM expert cache 1.52 → 0.58 GiB, prompts down to 69 tok/s. |
-| Letting the unit swap, headroom 10 GiB | Thrashing (above); the headroom does nothing without a budget flag. |
-| `--prefill-head-alias` | Crashed the engine on every second request (a known upstream bug). |
-| `STRATA_MTP_ROOM_MIN=1024` | 9.2K prompt 54 s → 68 s. |
-| `--mtp-q4 all` | Fewer experts cached and slower prompts, not more VRAM. |
-| `spec_min_p`, `pcie_frac` sweeps | Flat: the best value was within the 3% noise. |
-| `STRATA_SH_STREAM=1`, adaptive cache tuning | Within noise. |
-| llama.cpp with a dense 27B | About 3 tok/s, since over half the model ran on the CPU. |
-
-### Not tried yet
-
-- `STRATA_ROUTE_TAIL_SKIP=7`: upstream reports +10-20% decode on 12-16 GB
-  cards, at a small cost in answer quality.
-- `--adapt-swaps 0`: stopped "no progress for 60 s" prompt stalls on a gfx1031
-  card in an upstream issue, at the cost of cache slots.
-- `STRATA_RESIDENT_PIN=0`: Strata's troubleshooting guide says a 32 GB PC
-  can stall with `--resident-budget-gib` because the budget is locked in RAM,
-  leaving the OS little room; this keeps it pageable. This machine is such a
-  PC with a 20 GiB budget.
-- More RAM: room for `--kv-grow`, the PLE table in RAM and a larger quant.
