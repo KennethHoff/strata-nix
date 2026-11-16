@@ -17,10 +17,18 @@
 #
 # ## Why ggml is a second pin
 #
-# Strata's CMake fetches llama.cpp's ggml at configure time, which a sandboxed
-# build cannot; STRATA_GGML_DIR points it at ./versions.nix's copy instead. The
-# Gyro prompt kernels are an overlay that turns itself off on any other ggml
-# commit, so the build fails loud when the two pins drift apart.
+# Strata builds the ggml it vendors in third_party/strata-ggml, frozen at the
+# llama.cpp commit third_party/ggml/VERSION.txt names. strata-iq-pack still
+# needs that commit's gguf-py, which the vendored tree leaves out, so
+# ./versions.nix pins the same commit and the build fails loud when the two
+# drift apart.
+#
+# ## Why the MMQ prompt kernels follow gyroPromptKernels
+#
+# From 0.2.14 the prompt path runs on Strata's own kernels, and llama.cpp's
+# MMQ kernels are built only with STRATA_MMQ and STRATA_PREFILL_MMQ, as in
+# Strata's release builds. Gyro's trellis kernels are an overlay of those MMQ
+# kernels, so turning them on builds MMQ as well.
 #
 # ## Why serve/telemetry.py is patched
 #
@@ -83,7 +91,7 @@ stdenv.mkDerivation {
   ];
 
   postPatch = ''
-    pinned=$(sed -n 's/.*GIT_TAG \([0-9a-f]\{40\}\).*/\1/p' CMakeLists.txt)
+    pinned=$(cut -d' ' -f1 third_party/ggml/VERSION.txt)
     if [ "$pinned" != "${ggmlRev}" ]; then
       echo "Strata pins ggml $pinned but versions.nix has ${ggmlRev}; run nix run .#update" >&2
       exit 1
@@ -93,12 +101,12 @@ stdenv.mkDerivation {
   cmakeFlags = [
     (lib.cmakeBool "STRATA_ENABLE_HIP" true)
     (lib.cmakeBool "STRATA_ENABLE_CUDA" false)
-    (lib.cmakeBool "STRATA_PREFILL_MMQ" true)
+    (lib.cmakeBool "STRATA_MMQ" gyroPromptKernels)
+    (lib.cmakeBool "STRATA_PREFILL_MMQ" gyroPromptKernels)
     (lib.cmakeBool "STRATA_MMQ_TQ_OVERLAY" gyroPromptKernels)
     (lib.cmakeBool "STRATA_BUILD_TESTS" false)
     (lib.cmakeFeature "CMAKE_HIP_ARCHITECTURES" (lib.concatStringsSep ";" gpuTargets))
     (lib.cmakeFeature "CMAKE_HIP_COMPILER" "${rocmPackages.clr.hipClangPath}/clang++")
-    (lib.cmakeFeature "STRATA_GGML_DIR" "${ggml}")
   ];
   ninjaFlags = [ "strata" ];
 
