@@ -40,6 +40,7 @@
 let
   cfg = config.services.strata;
   vision = cfg.vision;
+  nativeGguf = if cfg.nativeGguf != null then cfg.nativeGguf else "${cfg.model}/model.gguf";
   stateDir = "/var/lib/strata";
   engineConfig = pkgs.writeText "strata.json" (builtins.toJSON cfg.engineSettings);
   engineSettings = {
@@ -111,6 +112,30 @@ in
         defaults to `''${model}/pack/tokenizer` and {option}`args` starts with
         `--pack ''${model}/pack --native ''${model}/model.gguf`. Leave it unset
         to give those yourself.
+      '';
+    };
+    nativeGguf = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "/srv/strata/m/Model-IQ2_XS-00001-of-00002.gguf";
+      description = ''
+        The GGUF {option}`model` passes to `--native` and pictures are read
+        from, instead of `''${model}/model.gguf`. A split model needs its first
+        shard under its own name: Strata finds the other shards by rewriting
+        the `-00001-of-0000N` part, and refuses a shard opened under another
+        name ("is shard 1 of N, but it was opened as a whole model").
+      '';
+    };
+    pleGguf = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "/srv/strata/Qwen3.8-Flash-Next-PLE-IQ4_NL.gguf";
+      description = ''
+        A standalone n-gram (PLE) table for a `-noPLE` model. {option}`model`
+        then also passes `--ple-gguf` with it and `--native-dense-gguf` with
+        the native GGUF: without the second, the engine reads the table as a
+        weight shard and stops with "missing qwen4exp.block_count". Leave it
+        unset for a model that carries its table, a split one included.
       '';
     };
     tokenizer = lib.mkOption {
@@ -205,13 +230,21 @@ in
     (lib.mkIf (cfg.model != null) {
       services.strata = {
         tokenizer = lib.mkDefault "${cfg.model}/pack/tokenizer";
-        vision.model = lib.mkDefault "${cfg.model}/model.gguf";
-        args = lib.mkBefore [
-          "--pack"
-          "${cfg.model}/pack"
-          "--native"
-          "${cfg.model}/model.gguf"
-        ];
+        vision.model = lib.mkDefault nativeGguf;
+        args = lib.mkBefore (
+          [
+            "--pack"
+            "${cfg.model}/pack"
+            "--native"
+            nativeGguf
+          ]
+          ++ lib.optionals (cfg.pleGguf != null) [
+            "--ple-gguf"
+            cfg.pleGguf
+            "--native-dense-gguf"
+            nativeGguf
+          ]
+        );
       };
     })
     (lib.mkIf vision.enable { services.strata.args = lib.mkAfter [ "--vision" ]; })

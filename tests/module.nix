@@ -58,6 +58,21 @@ let
       tokenizer = "/elsewhere/tokenizer";
     }).config.services.strata;
 
+  withSplit =
+    (evalWith {
+      model = "/srv/strata/m";
+      nativeGguf = "/srv/strata/m/M-00001-of-00002.gguf";
+      vision = {
+        enable = true;
+        mmproj = "/srv/strata/mmproj.gguf";
+      };
+    }).config.services.strata;
+  withPle =
+    (evalWith {
+      model = "/srv/strata/m";
+      pleGguf = "/srv/strata/ple.gguf";
+    }).config.services.strata;
+
   withVision =
     (evalWith {
       model = "/srv/strata/m";
@@ -102,6 +117,31 @@ let
       && visionConfig.vision.mmproj == "/srv/strata/mmproj.gguf"
       && visionConfig.vision.max_tokens == 300
       && visionConfig.vision.threads == 4
+    ))
+    (expect "nativeGguf replaces model.gguf for --native and pictures" (
+      lib.take 4 withSplit.args == [
+        "--pack"
+        "/srv/strata/m/pack"
+        "--native"
+        "/srv/strata/m/M-00001-of-00002.gguf"
+      ]
+      && withSplit.engineSettings.vision.model == "/srv/strata/m/M-00001-of-00002.gguf"
+    ))
+    (expect "no table flags without pleGguf" (
+      !(builtins.elem "--ple-gguf" withModel.args)
+      && !(builtins.elem "--native-dense-gguf" withModel.args)
+    ))
+    (expect "pleGguf adds the table and names the weights' source" (
+      withPle.args == [
+        "--pack"
+        "/srv/strata/m/pack"
+        "--native"
+        "/srv/strata/m/model.gguf"
+        "--ple-gguf"
+        "/srv/strata/ple.gguf"
+        "--native-dense-gguf"
+        "/srv/strata/m/model.gguf"
+      ]
     ))
     (expect "an explicit tokenizer wins over model" (
       withModelAndTokenizer.tokenizer == "/elsewhere/tokenizer"
