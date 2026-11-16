@@ -1,0 +1,32 @@
+--- a/serve/telemetry.py
++++ b/serve/telemetry.py
+@@ -113,6 +113,21 @@
+ SYSFS = "/sys"
+ 
+ 
++def _rocr_visible(gpus):
++    """The KFD GPU nodes ROCR_VISIBLE_DEVICES leaves the HIP runtime, in its order: indices into the full list, or
++    GPU-<hex> UUIDs matched against a node's unique_id. HIP numbers the cards after this filter."""
++    visible = os.environ.get("ROCR_VISIBLE_DEVICES", "").strip()
++    if not visible:
++        return gpus
++    out = []
++    for tok in (t.strip() for t in visible.split(",")):
++        if tok.upper().startswith("GPU-"):
++            out += [g for g in gpus if format(int(g.get("unique_id") or 0), "x") == tok[4:].lower()]
++        elif tok.isdigit() and int(tok) < len(gpus):
++            out.append(gpus[int(tok)])
++    return out
++
++
+ def amd_device_dir(index, sysfs=None):
+     """The amdgpu sysfs folder (/sys/class/drm/renderD<N>/device) of the AMD GPU that HIP numbers `index`: the KFD
+     topology's GPU nodes in order, the CPU nodes skipped, linked to their render node by drm_render_minor - the
+@@ -132,6 +147,7 @@
+             gpus.append(props)
+         except (OSError, ValueError):
+             continue
++    gpus = _rocr_visible(gpus)
+     if not 0 <= index < len(gpus) or not gpus[index].get("drm_render_minor"):
+         return None
+     dev = os.path.join(sysfs or SYSFS, "class", "drm", "renderD" + gpus[index]["drm_render_minor"].strip(), "device")

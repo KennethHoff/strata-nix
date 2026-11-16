@@ -22,6 +22,15 @@
 # Gyro prompt kernels are an overlay that turns itself off on any other ggml
 # commit, so the build fails loud when the two pins drift apart.
 #
+# ## Why serve/telemetry.py is patched
+#
+# The server reads GPU load, VRAM, temperature and power from amdgpu's sysfs
+# files, picking the card by counting the KFD topology's GPU nodes. It ignores
+# ROCR_VISIBLE_DEVICES, so on a PC with two AMD cards and the engine pinned to
+# the second one, /metrics, the Monitor and the free-VRAM check read the first.
+# The patch filters the nodes the way the ROCm runtime does, by index or by
+# GPU-<hex> UUID against each node's unique_id.
+#
 # ## Layout
 #
 # bin/strata is the engine. bin/strata-server is Strata's Python server
@@ -99,6 +108,8 @@ stdenv.mkDerivation {
     install -Dm755 strata $out/bin/strata
     mkdir -p $out/share/strata
     cp -r $src/. $out/share/strata/
+    chmod -R u+w $out/share/strata
+    patch -d $out/share/strata -p1 < ${./patches/telemetry-rocr-visible-devices.patch}
 
     makeWrapper ${lib.getExe python} $out/bin/strata-server \
       --add-flags "-m serve.server --engine strata" \
