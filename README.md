@@ -341,6 +341,34 @@ services.strata.package = pkgs.strata.override {
 };
 ```
 
+### RX 9000 series (gfx1201)
+
+```nix
+services.strata.package = pkgs.strata.override {
+  gpuTargets = [ "gfx1201" ];
+  gyroPromptKernels = true;
+};
+```
+
+No `HSA_OVERRIDE_GFX_VERSION`: nixpkgs' ROCm supports gfx1201 natively. The
+Gyro prompt kernels ran cleanly on an RX 9070 XT, and the server applies its
+RDNA4 defaults by itself. Measurements are under "RX 9070 XT results".
+
+### More than one AMD card
+
+The ROCm runtime numbers every card it sees, and the engine runs on the first.
+To give Strata one card, a desktop or game GPU beside it for instance, pin it
+by the UUID `rocminfo` prints for it:
+
+```nix
+services.strata.environment.ROCR_VISIBLE_DEVICES = "GPU-71ced39f82cbac4d";
+```
+
+A UUID stays with the card when the slots change; an index (`"1"`) does not.
+Drop `HSA_OVERRIDE_GFX_VERSION` when the pinned card doesn't need it: it
+applies to every card in the process. The server's own GPU readings (`/metrics`,
+the Monitor, the free-VRAM check) follow the same pin.
+
 ## Flake outputs
 
 | Output | What |
@@ -386,6 +414,8 @@ All under `services.strata`:
 | `port` | `8080` | Port of the OpenAI (`/v1`) and Anthropic (`/v1/messages`) APIs. |
 | `allowedHosts` | `[ ]` | Host names the API answers to besides its address and `localhost`. |
 | `model` | `null` | A directory with `model.gguf` and `pack/`; see below. |
+| `nativeGguf` | from `model` | The GGUF `--native` and the picture reader use; a split model's first shard by its own name. See below. |
+| `pleGguf` | `null` | A standalone n-gram table for a `-noPLE` model. See below. |
 | `modelName` | (required) | The model id the API reports. |
 | `tokenizer` | from `model` | The pack's tokenizer directory; required when `model` is unset. |
 | `maxContext` | `65536` | Longest context the engine accepts, in tokens. |
@@ -424,6 +454,39 @@ The tokenizer is only a default, so setting `tokenizer` yourself wins; the two
 arguments always come first in `args`. With `model` unset, `tokenizer` and the
 `--pack`/`--native` arguments are yours to give, for a pack without a native
 GGUF or files laid out another way.
+
+### Split and `-noPLE` models
+
+A split model (`…-00001-of-00002.gguf` and so on) must reach the engine under
+its first shard's own name: Strata finds the other shards by rewriting that
+part of the name, and refuses a shard opened as `model.gguf` ("is shard 1 of
+N, but it was opened as a whole model"). Keep the shards beside each other and
+point `nativeGguf` at the first:
+
+```nix
+services.strata = {
+  model = "/srv/strata/iq2-xs";
+  nativeGguf = "/srv/strata/iq2-xs/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf";
+};
+```
+
+A `-noPLE` file leaves out the n-gram (PLE) table, which is the base model's
+and the same in every Flash-Next quant. Give the table as its own file, for
+example one of
+[Delgon/Qwen3.8-Flash-Next-PLE-GGUF](https://huggingface.co/Delgon/Qwen3.8-Flash-Next-PLE-GGUF):
+
+```nix
+services.strata = {
+  model = "/srv/strata/gyro-m";
+  pleGguf = "/srv/strata/Qwen3.8-Flash-Next-PLE-IQ4_NL.gguf";
+};
+```
+
+This adds `--ple-gguf` and `--native-dense-gguf` with the native GGUF. The
+second is not optional: without it the engine reads the table as a weight
+shard and stops with "missing qwen4exp.block_count". The table can't come from
+another quant's files either: a whole model GGUF fails on duplicate dense
+tensors, and a split shard's metadata names a different first shard.
 
 ### `vision`
 
