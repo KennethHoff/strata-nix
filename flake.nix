@@ -15,6 +15,7 @@
         strata = pkgs.callPackage ./package.nix { };
         strata-iq-pack = pkgs.callPackage ./iq-pack.nix { };
         strata-vision = pkgs.callPackage ./vision.nix { };
+        strata-dflash2 = pkgs.callPackage ./dflash2.nix { };
         default = strata;
       });
 

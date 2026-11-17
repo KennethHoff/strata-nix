@@ -376,8 +376,9 @@ the Monitor, the free-VRAM check) follow the same pin.
 | `packages.x86_64-linux.strata` (`default`) | `strata` (engine), `strata-server`, `strata-iq-pack` |
 | `packages.x86_64-linux.strata-iq-pack` | `strata-iq-pack` alone, without ROCm; `.mkPack` builds a model's pack |
 | `packages.x86_64-linux.strata-vision` | `strata-vision`, the CPU picture reader `services.strata.vision` runs |
+| `packages.x86_64-linux.strata-dflash2` | the DFlash2 drafter packs for Qwen3.8-Flash-Next (a 1.2 GB download from Inco AI, Apache-2.0) |
 | `nixosModules.default` | `services.strata` |
-| `overlays.default` | adds `pkgs.strata`, `pkgs.strata-iq-pack` and `pkgs.strata-vision` (the NixOS module applies it itself) |
+| `overlays.default` | adds `pkgs.strata`, `pkgs.strata-iq-pack`, `pkgs.strata-vision` and `pkgs.strata-dflash2` (the NixOS module applies it itself) |
 | `apps.x86_64-linux.update` | bumps `versions.nix` to the newest release |
 
 ```bash
@@ -422,6 +423,9 @@ All under `services.strata`:
 | `args` | `[ ]` | Engine arguments (`strata --help`). |
 | `effortPosition` | `"start"` | Where a request's reasoning effort goes in the prompt: `"start"` (Strata's default) or `"end"`, which keeps the cached conversation when the effort changes. |
 | `learnExpertProfile` | `false` | Saves the expert ranking learned from traffic to `/var/lib/strata`; the next start uses it instead of `--expert-profile`. |
+| `drafting` | `null` | Which drafter guesses ahead: `"mtp"`, `"dflash2"`, `"auto"` or `"off"`; unset leaves it to the server. See below. |
+| `dflash2` | `null` | A directory with the DFlash2 drafter packs, e.g. `pkgs.strata-dflash2`. See below. |
+| `userArgs` | `[ ]` | Engine options the server keeps over the ones it generates, e.g. DFlash2's `--spec` and `--draft-conf`. |
 | `vision.enable` | `false` | Accepts pictures (OpenAI `image_url`, Anthropic `image` blocks); see below. |
 | `vision.mmproj` | ISTA's Flash-Next mmproj | The model's picture encoder; the default fits every Qwen3.8-Flash-Next quant, Gyro's included. |
 | `vision.model` | from `model` | The text GGUF the reader takes the vocabulary from. |
@@ -487,6 +491,35 @@ second is not optional: without it the engine reads the table as a weight
 shard and stops with "missing qwen4exp.block_count". The table can't come from
 another quant's files either: a whole model GGUF fails on duplicate dense
 tensors, and a split shard's metadata names a different first shard.
+
+### `drafting` and `dflash2`
+
+The engine decodes faster when a drafter guesses a few tokens ahead and one
+pass checks them. The model's own MTP layer (`--mtp`, `--spec`) is the
+default. DFlash2 is a separate draft model for Qwen3.8-Flash-Next:
+
+```nix
+services.strata = {
+  drafting = "dflash2";
+  dflash2 = pkgs.strata-dflash2;
+  userArgs = [ "--spec" "8" "--draft-conf" "0.7" ];
+};
+```
+
+- The server rewrites the drafter's engine options at every start from
+  `drafting`, so `--draft dflash2` in `args` alone does nothing: it removes
+  the option and starts the MTP, or no drafter if `--mtp` is gone too.
+- It takes the drafter only from `dflash2/` two levels above `--pack`.
+  `dflash2` therefore serves `model` through a folder that links both; with
+  `model` unset, lay the directories out that way yourself.
+- Keep `--mtp <dir>` in `args`: the server reads the draft vocabulary from it
+  and falls back to the MTP when DFlash2 cannot start.
+- With DFlash2 the server sets the verify window and confidence itself (a
+  window of 6, a confidence from the card's expert slots). `userArgs` wins
+  over those.
+
+It is off unless set. Measurements on an RX 9070 XT are in the
+[nixos-desktop notes](https://github.com/KennethHoff/nix/blob/master/pkgs/strata/README.md).
 
 ### `vision`
 

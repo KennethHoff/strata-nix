@@ -26,6 +26,14 @@
 # The server starts from any saved profile whose layer and expert counts match
 # the configured one, so two quants of one model would share a single file.
 #
+# ## Why DFlash2 needs a folder of its own
+#
+# The server takes the drafter only from `dflash2/` two levels above the
+# `--pack` path, which for a model in the store is the store itself. `dflash2`
+# therefore serves the pack through a folder that links the model beside the
+# drafter packs. Only `--pack` moves: the tokenizer, `--native` and pictures
+# keep the model's own paths.
+#
 # ## Why the config names the HIP backend
 #
 # Without `"backend": "hip"` the server takes the card for an NVIDIA one: it
@@ -42,6 +50,17 @@ let
   vision = cfg.vision;
   nativeGguf = if cfg.nativeGguf != null then cfg.nativeGguf else "${cfg.model}/model.gguf";
   stateDir = "/var/lib/strata";
+  packDir =
+    if cfg.dflash2 == null then
+      "${cfg.model}/pack"
+    else
+      "${
+        pkgs.runCommand "strata-model-with-dflash2" { } ''
+          mkdir $out
+          ln -s ${cfg.model} $out/model
+          ln -s ${cfg.dflash2} $out/dflash2
+        ''
+      }/model/pack";
   engineConfig = pkgs.writeText "strata.json" (builtins.toJSON cfg.engineSettings);
   engineSettings = {
     exe = lib.getExe' cfg.package "strata";
@@ -72,7 +91,9 @@ let
   }
   // lib.optionalAttrs cfg.learnExpertProfile {
     expert_profile_save = "${stateDir}/expert-profile-${cfg.modelName}.bin";
-  };
+  }
+  // lib.optionalAttrs (cfg.drafting != null) { inherit (cfg) drafting; }
+  // lib.optionalAttrs (cfg.userArgs != [ ]) { user_args = cfg.userArgs; };
 in
 {
   options.services.strata = {
@@ -136,6 +157,51 @@ in
         the native GGUF: without the second, the engine reads the table as a
         weight shard and stops with "missing qwen4exp.block_count". Leave it
         unset for a model that carries its table, a split one included.
+      '';
+    };
+    drafting = lib.mkOption {
+      type = lib.types.nullOr (
+        lib.types.enum [
+          "auto"
+          "mtp"
+          "dflash2"
+          "off"
+        ]
+      );
+      default = null;
+      description = ''
+        Which drafter guesses tokens ahead: the model's own MTP layer, the
+        DFlash2 draft model, or none. Unset leaves the choice to the server,
+        which takes the MTP unless it finds DFlash2 packs and its own table
+        prefers them for the card and model. The server rewrites the
+        drafter's options in {option}`args` to match at every start, so
+        `--draft dflash2` there has no effect without this.
+      '';
+    };
+    userArgs = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [
+        "--spec"
+        "8"
+        "--draft-conf"
+        "0.7"
+      ];
+      description = ''
+        Engine options the server keeps over the ones it generates. With
+        `drafting = "dflash2"` it sets the verify window and confidence
+        itself; the ones given here win.
+      '';
+    };
+    dflash2 = lib.mkOption {
+      type = lib.types.nullOr (lib.types.either lib.types.package lib.types.str);
+      default = null;
+      example = lib.literalExpression "pkgs.strata-dflash2";
+      description = ''
+        A directory holding the DFlash2 drafter packs, as `pkgs.strata-dflash2`
+        builds them. With {option}`model` set, the model is then served from a
+        folder that links both, since the server only looks for the packs in
+        `dflash2/` two levels above `--pack`.
       '';
     };
     tokenizer = lib.mkOption {
@@ -234,7 +300,7 @@ in
         args = lib.mkBefore (
           [
             "--pack"
-            "${cfg.model}/pack"
+            packDir
             "--native"
             nativeGguf
           ]
